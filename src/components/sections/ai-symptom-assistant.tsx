@@ -16,60 +16,117 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import type { TriageAnalysis } from "@/lib/triage-analysis";
+import { triageToNarrativeSummary } from "@/lib/triage-analysis";
+import { TriageInsightPanel } from "@/components/sections/triage-insight-panel";
 
-type Msg = { id: string; role: "user" | "ai"; text: string };
+/**
+ * --- Triage pipeline (client side) ---
+ * 1) Capture user narrative in the glass copilot surface.
+ * 2) POST to `/api/analyze-symptoms` (server-only Gemini access).
+ * 3) Render typed triage JSON with motion-native disclosure + fallback copy on failures.
+ */
 
-const seed: Msg[] = [
+type Msg = {
+  id: string;
+  role: "user" | "ai";
+  text: string;
+  triage?: TriageAnalysis;
+  isError?: boolean;
+};
+
+type AnalyzeOk = { ok: true; data: TriageAnalysis };
+type AnalyzeErr = { ok: false; error: string };
+type AnalyzeResponse = AnalyzeOk | AnalyzeErr;
+
+const WELCOME_TEXT =
+  "You are connected to the VITALIS triage reasoning layer. Describe your chief complaint, timing, severity (0–10), associated symptoms, and modifiers. Each send routes your narrative through Gemini Flash for structured triage JSON—review every field with a licensed clinician before acting.";
+
+const initialMessages: Msg[] = [
   {
-    id: "1",
-    role: "user",
-    text: "I have a sharp chest pressure that radiates to my jaw after exertion. It fades in a few minutes.",
+    id: "welcome-static",
+    role: "ai",
+    text: WELCOME_TEXT,
   },
 ];
 
-const aiReplies = [
-  "Understood. I am cross-referencing your vitals stream, ECG morphology priors, and exertion timeline. Give me a moment to stabilize the model ensemble…",
-];
-
 export function AiSymptomAssistant() {
-  const [messages, setMessages] = React.useState<Msg[]>(seed);
+  const [messages, setMessages] = React.useState<Msg[]>(initialMessages);
   const [input, setInput] = React.useState("");
-  const [typing, setTyping] = React.useState(false);
+  const [isAnalyzing, setIsAnalyzing] = React.useState(false);
   const bottomRef = React.useRef<HTMLDivElement>(null);
-  const booted = React.useRef(false);
 
   React.useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, typing]);
+  }, [messages, isAnalyzing]);
 
-  const pushAi = React.useCallback(async (text: string) => {
-    setTyping(true);
-    await new Promise((r) => setTimeout(r, 900));
-    setTyping(false);
-    const id = crypto.randomUUID();
-    let shown = "";
-    setMessages((m) => [...m, { id, role: "ai", text: "" }]);
-    for (let i = 0; i <= text.length; i++) {
-      shown = text.slice(0, i);
-      setMessages((m) => m.map((x) => (x.id === id ? { ...x, text: shown } : x)));
-      await new Promise((r) => setTimeout(r, 14 + ((i * 7) % 11)));
+  /**
+   * Streams the narrative summary into the bubble while the structured panel
+   * (fed by the same triage object) animates in—keeps the cinematic cadence without faking model output.
+   */
+  const streamAiNarrative = React.useCallback(async (messageId: string, triage: TriageAnalysis) => {
+    const full = triageToNarrativeSummary(triage);
+    for (let i = 0; i <= full.length; i++) {
+      const shown = full.slice(0, i);
+      setMessages((m) =>
+        m.map((x) => (x.id === messageId ? { ...x, text: shown, triage } : x)),
+      );
+      await new Promise((r) => setTimeout(r, 10 + ((i * 5) % 9)));
     }
   }, []);
 
-  React.useEffect(() => {
-    if (booted.current) return;
-    booted.current = true;
-    void pushAi(aiReplies[0]);
-  }, [pushAi]);
-
   const send = async () => {
     const t = input.trim();
-    if (!t) return;
+    if (!t || isAnalyzing) return;
     setInput("");
     setMessages((m) => [...m, { id: crypto.randomUUID(), role: "user", text: t }]);
-    await pushAi(
-      "Acknowledged. I am tightening surveillance on ST trends, troponin kinetics priors, and exertional onset. If pain exceeds 6/10, persists beyond 10 minutes, or returns at rest, initiate emergency routing immediately."
-    );
+
+    setIsAnalyzing(true);
+
+    try {
+      const res = await fetch("/api/analyze-symptoms", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symptoms: t }),
+      });
+      const payload = (await res.json()) as AnalyzeResponse;
+
+      if (!res.ok || !payload.ok) {
+        const errText =
+          !payload.ok && "error" in payload
+            ? payload.error
+            : `Request failed (${res.status}).`;
+        setMessages((m) => [
+          ...m,
+          {
+            id: crypto.randomUUID(),
+            role: "ai",
+            isError: true,
+            text:
+              errText +
+              "\n\nFallback: if symptoms are severe, worsening, or involve chest pain, stroke signs, or trouble breathing, seek emergency care immediately.",
+          },
+        ]);
+        return;
+      }
+
+      const aiId = crypto.randomUUID();
+      setMessages((m) => [...m, { id: aiId, role: "ai", text: "", triage: payload.data }]);
+      await streamAiNarrative(aiId, payload.data);
+    } catch {
+      setMessages((m) => [
+        ...m,
+        {
+          id: crypto.randomUUID(),
+          role: "ai",
+          isError: true,
+          text:
+            "We could not reach the triage service. Check your connection and try again.\n\nFallback: for any emergency signs, call local emergency services without delay.",
+        },
+      ]);
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   const suggestions = [
@@ -100,6 +157,13 @@ export function AiSymptomAssistant() {
           <motion.p variants={fadeUpHero} className="text-base text-cyan-100/65 md:text-lg">
             A premium copilot surface for patients and clinicians—motion-native, glass layered, and tuned for emotional safety during uncertainty.
           </motion.p>
+          <motion.p
+            variants={fadeUpHero}
+            className="rounded-2xl border border-cyan-500/20 bg-black/30 px-4 py-3 text-sm leading-relaxed text-cyan-100/80 backdrop-blur-sm"
+          >
+            <span className="font-medium text-cyan-50">Medical disclaimer: </span>
+            This is an AI-assisted triage prototype and not a replacement for licensed medical professionals.
+          </motion.p>
         </motion.div>
 
         <div className="grid gap-8 lg:grid-cols-[1.15fr_0.85fr]">
@@ -121,13 +185,15 @@ export function AiSymptomAssistant() {
                 </motion.div>
                 <div>
                   <div className="text-sm font-medium text-white">VITALIS Copilot</div>
-                  <div className="text-xs text-cyan-200/60">Multimodal · On-device optional</div>
+                  <div className="text-xs text-cyan-200/60">Gemini Flash · Server-side NLP</div>
                 </div>
               </div>
               <motion.div whileTap={{ scale: 0.96 }} transition={spring.tactile}>
                 <Button
+                  type="button"
                   size="icon"
                   variant="outline"
+                  title="Voice capture (prototype)"
                   className="rounded-xl border-cyan-500/25 bg-white/5 text-cyan-100 hover:bg-cyan-500/10"
                 >
                   <Mic className="size-4" />
@@ -154,11 +220,13 @@ export function AiSymptomAssistant() {
                         "max-w-[92%] rounded-2xl border px-4 py-3 text-sm leading-relaxed shadow-panel backdrop-blur-md md:text-[15px]",
                         m.role === "user"
                           ? "ml-auto border-cyan-500/15 bg-white/[0.04] text-cyan-50"
-                          : "mr-auto border-cyan-400/25 bg-gradient-to-br from-cyan-500/15 via-sky-500/5 to-transparent text-cyan-50"
+                          : m.isError
+                            ? "mr-auto border-rose-500/35 bg-rose-950/25 text-rose-50"
+                            : "mr-auto border-cyan-400/25 bg-gradient-to-br from-cyan-500/15 via-sky-500/5 to-transparent text-cyan-50",
                       )}
                     >
-                      {m.text}
-                      {m.role === "ai" && m.text.length === 0 && (
+                      <div className="whitespace-pre-wrap">{m.text}</div>
+                      {m.role === "ai" && m.text.length === 0 && !m.isError && (
                         <span className="inline-flex gap-1.5 pl-0.5">
                           {[0, 1, 2].map((i) => (
                             <motion.span
@@ -175,12 +243,13 @@ export function AiSymptomAssistant() {
                           ))}
                         </span>
                       )}
+                      {m.triage && !m.isError && <TriageInsightPanel triage={m.triage} />}
                     </motion.div>
                   ))}
                 </AnimatePresence>
 
                 <AnimatePresence mode="popLayout">
-                  {typing && (
+                  {isAnalyzing && (
                     <motion.div
                       initial={{ opacity: 0, y: 6 }}
                       animate={{ opacity: 1, y: 0 }}
@@ -193,7 +262,7 @@ export function AiSymptomAssistant() {
                         animate={{ opacity: [0.35, 1, 0.35] }}
                         transition={{ duration: 1.4, repeat: Infinity, ease: ease.inOut }}
                       />
-                      Synthesizing differential space…
+                      Running Gemini triage synthesis…
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -222,13 +291,16 @@ export function AiSymptomAssistant() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && void send()}
+                  disabled={isAnalyzing}
                   placeholder="Describe symptoms with as much context as you can…"
-                  className="flex-1 rounded-2xl border border-cyan-500/20 bg-black/40 px-4 py-3 text-sm text-cyan-50 outline-none ring-0 placeholder:text-cyan-200/35 focus:border-cyan-400/50"
+                  className="flex-1 rounded-2xl border border-cyan-500/20 bg-black/40 px-4 py-3 text-sm text-cyan-50 outline-none ring-0 placeholder:text-cyan-200/35 focus:border-cyan-400/50 disabled:opacity-50"
                 />
                 <motion.div whileTap={{ scale: 0.97 }} transition={spring.tactile}>
                   <Button
+                    type="button"
                     onClick={() => void send()}
-                    className="rounded-2xl bg-gradient-to-r from-cyan-500 to-sky-500 px-5 text-black shadow-cyan hover:opacity-95"
+                    disabled={isAnalyzing || !input.trim()}
+                    className="rounded-2xl bg-gradient-to-r from-cyan-500 to-sky-500 px-5 text-black shadow-cyan hover:opacity-95 disabled:opacity-40"
                   >
                     <Send className="size-4" />
                   </Button>
