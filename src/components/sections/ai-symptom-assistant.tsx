@@ -54,24 +54,42 @@ export function AiSymptomAssistant() {
   const [messages, setMessages] = React.useState<Msg[]>(initialMessages);
   const [input, setInput] = React.useState("");
   const [isAnalyzing, setIsAnalyzing] = React.useState(false);
-  const bottomRef = React.useRef<HTMLDivElement>(null);
+  const scrollAreaRootRef = React.useRef<HTMLDivElement>(null);
+  /** True while typewriter stream updates — use instant scroll to avoid competing smooth animations. */
+  const streamingRef = React.useRef(false);
 
-  React.useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, isAnalyzing]);
+  const scrollChatToBottom = React.useCallback((behavior: ScrollBehavior = "smooth") => {
+    const root = scrollAreaRootRef.current;
+    if (!root) return;
+    const viewport = root.querySelector("[data-radix-scroll-area-viewport]") as HTMLElement | null;
+    if (!viewport) return;
+    viewport.scrollTo({ top: viewport.scrollHeight, behavior });
+  }, []);
+
+  React.useLayoutEffect(() => {
+    const id = requestAnimationFrame(() => {
+      scrollChatToBottom(streamingRef.current ? "auto" : "smooth");
+    });
+    return () => cancelAnimationFrame(id);
+  }, [messages, isAnalyzing, scrollChatToBottom]);
 
   /**
    * Streams the narrative summary into the bubble while the structured panel
    * (fed by the same triage object) animates in—keeps the cinematic cadence without faking model output.
    */
   const streamAiNarrative = React.useCallback(async (messageId: string, triage: TriageAnalysis) => {
+    streamingRef.current = true;
     const full = triageToNarrativeSummary(triage);
-    for (let i = 0; i <= full.length; i++) {
-      const shown = full.slice(0, i);
-      setMessages((m) =>
-        m.map((x) => (x.id === messageId ? { ...x, text: shown, triage } : x)),
-      );
-      await new Promise((r) => setTimeout(r, 10 + ((i * 5) % 9)));
+    try {
+      for (let i = 0; i <= full.length; i++) {
+        const shown = full.slice(0, i);
+        setMessages((m) =>
+          m.map((x) => (x.id === messageId ? { ...x, text: shown, triage } : x)),
+        );
+        await new Promise((r) => setTimeout(r, 10 + ((i * 5) % 9)));
+      }
+    } finally {
+      streamingRef.current = false;
     }
   }, []);
 
@@ -166,15 +184,15 @@ export function AiSymptomAssistant() {
           </motion.p>
         </motion.div>
 
-        <div className="grid gap-8 lg:grid-cols-[1.15fr_0.85fr]">
+        <div className="grid min-h-0 gap-8 lg:grid-cols-[1.15fr_0.85fr] lg:items-stretch">
           <motion.div
             variants={fadeUpHero}
             initial="hidden"
             whileInView="visible"
             viewport={viewport}
-            className="glass-panel holo-border relative flex min-h-[520px] flex-col overflow-hidden rounded-3xl"
+            className="glass-panel holo-border flex min-h-[520px] flex-col overflow-hidden rounded-3xl lg:h-full lg:min-h-0"
           >
-            <div className="flex items-center justify-between border-b border-cyan-500/10 px-5 py-4">
+            <div className="flex shrink-0 items-center justify-between border-b border-cyan-500/10 px-5 py-4">
               <div className="flex items-center gap-3">
                 <motion.div
                   className="relative grid size-11 place-items-center rounded-2xl border border-cyan-400/35 bg-gradient-to-br from-cyan-500/30 to-sky-600/10 shadow-cyan"
@@ -201,13 +219,12 @@ export function AiSymptomAssistant() {
               </motion.div>
             </div>
 
-            <ScrollArea className="h-[400px] px-2 md:h-[420px]">
-              <div className="space-y-4 p-4 pb-28">
+            <ScrollArea ref={scrollAreaRootRef} className="min-h-0 flex-1 self-stretch px-2">
+              <div className="space-y-5 p-4 pb-6 pr-3">
                 <AnimatePresence initial={false}>
                   {messages.map((m, idx) => (
                     <motion.div
                       key={m.id}
-                      layout
                       initial={{ opacity: 0, y: 12 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -6 }}
@@ -217,7 +234,7 @@ export function AiSymptomAssistant() {
                         delay: Math.min(idx * 0.025, 0.15),
                       }}
                       className={cn(
-                        "max-w-[92%] rounded-2xl border px-4 py-3 text-sm leading-relaxed shadow-panel backdrop-blur-md md:text-[15px]",
+                        "max-w-[min(92%,42rem)] min-w-0 rounded-2xl border px-4 py-3.5 text-sm leading-relaxed shadow-panel backdrop-blur-md md:px-5 md:py-4 md:text-[15px]",
                         m.role === "user"
                           ? "ml-auto border-cyan-500/15 bg-white/[0.04] text-cyan-50"
                           : m.isError
@@ -225,7 +242,7 @@ export function AiSymptomAssistant() {
                             : "mr-auto border-cyan-400/25 bg-gradient-to-br from-cyan-500/15 via-sky-500/5 to-transparent text-cyan-50",
                       )}
                     >
-                      <div className="whitespace-pre-wrap">{m.text}</div>
+                      <div className="min-w-0 whitespace-pre-wrap break-words">{m.text}</div>
                       {m.role === "ai" && m.text.length === 0 && !m.isError && (
                         <span className="inline-flex gap-1.5 pl-0.5">
                           {[0, 1, 2].map((i) => (
@@ -266,12 +283,11 @@ export function AiSymptomAssistant() {
                     </motion.div>
                   )}
                 </AnimatePresence>
-                <div ref={bottomRef} />
               </div>
             </ScrollArea>
 
-            <div className="absolute inset-x-0 bottom-0 border-t border-cyan-500/10 bg-gradient-to-t from-black/70 to-transparent p-4 backdrop-blur-xl">
-              <div className="mb-3 flex flex-wrap gap-2">
+            <div className="isolate shrink-0 border-t border-cyan-500/10 bg-gradient-to-t from-black/85 via-black/70 to-black/55 p-4 pb-[max(1rem,env(safe-area-inset-bottom,0px))] backdrop-blur-xl">
+              <div className="mb-3 flex flex-wrap gap-2 gap-y-2.5">
                 {suggestions.map((s) => (
                   <motion.button
                     key={s}
@@ -286,11 +302,15 @@ export function AiSymptomAssistant() {
                   </motion.button>
                 ))}
               </div>
-              <div className="flex gap-2">
+              <div className="flex min-w-0 gap-2">
                 <input
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && void send()}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter" || e.shiftKey) return;
+                    e.preventDefault();
+                    void send();
+                  }}
                   disabled={isAnalyzing}
                   placeholder="Describe symptoms with as much context as you can…"
                   className="flex-1 rounded-2xl border border-cyan-500/20 bg-black/40 px-4 py-3 text-sm text-cyan-50 outline-none ring-0 placeholder:text-cyan-200/35 focus:border-cyan-400/50 disabled:opacity-50"
