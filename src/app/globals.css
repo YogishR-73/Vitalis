@@ -1,0 +1,93 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 47% 4%;
+    --foreground: 186 100% 94%;
+    --card: 215 45% 8%;
+    --card-foreground: 186 100% 94%;
+    --popover: 215 45% 6%;
+    --popover-foreground: 186 100% 94%;
+    --primary: 188 94% 43%;
+    --primary-foreground: 222 47% 4%;
+    --secondary: 215 32% 12%;
+    --secondary-foreground: 186 80% 90%;
+    --muted: 215 25% 16%;
+    --muted-foreground: 215 15% 58%;
+    --accent: 199 89% 48%;
+    --accent-foreground: 222 47% 4%;
+    --destructive: 350 89% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 188 40% 18%;
+    --input: 188 40% 18%;
+    --ring: 188 94% 50%;
+    --radius: 0.75rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  html.emergency-mode body {
+    box-shadow: inset 0 0 120px rgba(244, 63, 94, 0.18);
+  }
+
+  ::selection {
+    @apply bg-cyan-500/30 text-white;
+  }
+}
+
+@layer utilities {
+  .glass-panel {
+    @apply border border-cyan-500/15 bg-gradient-to-br from-white/[0.06] to-transparent backdrop-blur-xl;
+    box-shadow:
+      0 0 0 1px rgba(34, 211, 238, 0.08) inset,
+      0 20px 60px rgba(0, 0, 0, 0.45);
+  }
+
+  .text-glow {
+    text-shadow:
+      0 0 20px rgba(34, 211, 238, 0.55),
+      0 0 60px rgba(56, 189, 248, 0.35);
+  }
+
+  .holo-border {
+    position: relative;
+  }
+
+  .holo-border::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(
+      135deg,
+      rgba(34, 211, 238, 0.55),
+      rgba(56, 189, 248, 0.15),
+      rgba(34, 211, 238, 0.35)
+    );
+    -webkit-mask:
+      linear-gradient(#fff 0 0) content-box,
+      linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  .scanlines {
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(255, 255, 255, 0.02),
+      rgba(255, 255, 255, 0.02) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+  }
+}
