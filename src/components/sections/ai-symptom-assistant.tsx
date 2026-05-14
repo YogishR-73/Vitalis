@@ -142,7 +142,6 @@ export function AiSymptomAssistant() {
                     <motion.div
                       key={m.id}
                       layout
-                      layoutTransition={spring.soft}
                       initial={{ opacity: 0, y: 12 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -6 }}
