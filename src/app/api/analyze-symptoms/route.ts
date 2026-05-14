@@ -1,67 +1,51 @@
-import { GoogleGenerativeAI, SchemaType, type ResponseSchema } from "@google/generative-ai";
+import OpenAI from "openai";
 import { NextResponse } from "next/server";
 import { normalizeTriagePayload, parseModelJson, type TriageAnalysis } from "@/lib/triage-analysis";
 
 /**
+ * --- OpenRouter provider flow ---
+ * 1) This route uses the OpenAI-compatible HTTPS API at `openrouter.ai/api/v1`.
+ * 2) `OPENROUTER_API_KEY` authenticates server-side only (never bundled to the client).
+ * 3) Optional `OPENROUTER_HTTP_REFERER` / `OPENROUTER_MODEL` env vars tune rankings and model routing.
+ */
+
+/**
  * --- NLP flow (high level) ---
  * 1) Client captures free-text symptom narrative (no key material leaves the browser).
- * 2) This route wraps that narrative in a clinician-style system brief + JSON-only contract.
- * 3) Gemini Flash performs semantic extraction, severity language, differentials, and escalation cues.
+ * 2) This route wraps that narrative in a clinician-style system brief + strict JSON contract.
+ * 3) The instruction model performs semantic extraction, severity language, differentials, and escalation cues.
  * 4) We parse + normalize server-side before returning typed JSON to the UI.
  */
 
-/** Gemini Flash — fast structured generation for interactive triage prototypes. */
-const GEMINI_FLASH_MODEL = "gemini-2.0-flash";
+/** Default: strong free instruction model on OpenRouter (override with OPENROUTER_MODEL). */
+const DEFAULT_OPENROUTER_MODEL = "deepseek/deepseek-chat-v3-0324:free";
+
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
 /**
- * JSON schema passed to Gemini so the candidate is constrained to our triage object.
- * This complements the system prompt and reduces malformed outputs.
+ * Exact JSON shape the model must emit (keys and array types must match for `normalizeTriagePayload`).
  */
-const triageResponseSchema: ResponseSchema = {
-  type: SchemaType.OBJECT,
-  required: [
-    "symptoms",
-    "severity",
-    "possible_conditions",
-    "emergency_flags",
-    "recommendation",
-    "confidence",
-    "triage_level",
-  ],
-  properties: {
-    symptoms: {
-      type: SchemaType.ARRAY,
-      items: { type: SchemaType.STRING },
-      description: "Discrete symptom phrases inferred from the narrative.",
-    },
-    severity: {
-      type: SchemaType.STRING,
-      description: "Qualitative severity label (e.g., mild / moderate / severe) plus brief justification.",
-    },
-    possible_conditions: {
-      type: SchemaType.ARRAY,
-      items: { type: SchemaType.STRING },
-      description: "Ranked differentials as lay + clinical short labels, not definitive diagnoses.",
-    },
-    emergency_flags: {
-      type: SchemaType.ARRAY,
-      items: { type: SchemaType.STRING },
-      description: "Red-flag patterns that warrant urgent or emergent escalation if present.",
-    },
-    recommendation: {
-      type: SchemaType.STRING,
-      description: "Immediate safety-oriented next steps, including when to seek emergency care.",
-    },
-    confidence: {
-      type: SchemaType.STRING,
-      description: "Epistemic humility statement or qualitative confidence band for the triage view.",
-    },
-    triage_level: {
-      type: SchemaType.STRING,
-      description: "Acuity bucket such as ESI-inspired level or emergent / urgent / less-urgent / routine.",
-    },
-  },
-};
+const TRIAGE_JSON_SHAPE = `{
+  "symptoms": [],
+  "severity": "",
+  "possible_conditions": [],
+  "emergency_flags": [],
+  "recommendation": "",
+  "confidence": "",
+  "triage_level": ""
+}`;
+
+const SYSTEM_INSTRUCTION = `You are a clinical decision-support assistant for a structured triage prototype.
+You are not providing a definitive diagnosis or legally binding medical advice.
+Extract and organize information from the user's narrative into the required JSON fields only.
+Use cautious, evidence-aligned language; prefer "consider" over "diagnose".
+If information is missing, infer conservatively and reflect uncertainty in confidence and triage_level.
+Always populate every JSON field; arrays may be empty only when truly no items apply.
+For emergency_flags, include concise machine-like tokens when red-flag patterns appear (e.g., "thunderclap_headache", "focal_neurologic_deficit").
+Respond with a single JSON object only — no markdown fences, no commentary before or after.
+The JSON object MUST have exactly these keys and value types:
+${TRIAGE_JSON_SHAPE}
+symptoms, possible_conditions, and emergency_flags are arrays of strings; all other fields are strings.`;
 
 type AnalyzeBody = { symptoms?: string };
 
@@ -69,15 +53,19 @@ type OkPayload = { ok: true; data: TriageAnalysis };
 type ErrPayload = { ok: false; error: string };
 
 /**
- * --- AI orchestration ---
- * Single-shot generateContent with JSON mime type + response schema.
- * API key stays server-side (`GEMINI_API_KEY`); never forwarded to the client bundle.
+ * --- NLP orchestration ---
+ * Single-shot chat completion with JSON mode (`response_format: json_object`) so the assistant emits parseable structured output.
+ */
+
+/**
+ * --- Structured triage pipeline ---
+ * OpenRouter returns assistant text → `parseModelJson` → `normalizeTriagePayload` → typed `TriageAnalysis` for the UI.
  */
 export async function POST(req: Request): Promise<NextResponse<OkPayload | ErrPayload>> {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     return NextResponse.json(
-      { ok: false, error: "Server configuration error: GEMINI_API_KEY is not set." },
+      { ok: false, error: "Server configuration error: OPENROUTER_API_KEY is not set." },
       { status: 500 },
     );
   }
@@ -100,32 +88,40 @@ export async function POST(req: Request): Promise<NextResponse<OkPayload | ErrPa
     );
   }
 
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({
-    model: GEMINI_FLASH_MODEL,
-    generationConfig: {
-      temperature: 0.35,
-      topP: 0.9,
-      maxOutputTokens: 2048,
-      responseMimeType: "application/json",
-      responseSchema: triageResponseSchema,
+  const model = process.env.OPENROUTER_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL;
+  const referer = process.env.OPENROUTER_HTTP_REFERER?.trim();
+
+  const client = new OpenAI({
+    apiKey,
+    baseURL: OPENROUTER_BASE_URL,
+    defaultHeaders: {
+      "X-Title": "VITALIS AI Triage",
+      ...(referer ? { "HTTP-Referer": referer } : {}),
     },
-    systemInstruction: `You are a clinical decision-support assistant for a structured triage prototype.
-You are not providing a definitive diagnosis or legally binding medical advice.
-Extract and organize information from the user's narrative into the required JSON fields only.
-Use cautious, evidence-aligned language; prefer "consider" over "diagnose".
-If information is missing, infer conservatively and reflect uncertainty in confidence and triage_level.
-Always populate every JSON field; arrays may be empty only when truly no items apply.
-For emergency_flags, include concise machine-like tokens when red-flag patterns appear (e.g., "thunderclap_headache", "focal_neurologic_deficit").
-Never include markdown, commentary, or text outside JSON.`,
   });
 
-  const userPrompt = `Chief complaint / symptom narrative:\n"""${symptoms}"""\n\nReturn the triage JSON object per schema.`;
+  const userPrompt = `Chief complaint / symptom narrative:\n"""${symptoms}"""\n\nReturn only the triage JSON object as specified.`;
 
   try {
-    const result = await model.generateContent(userPrompt);
-    const response = result.response;
-    const rawText = response.text();
+    const completion = await client.chat.completions.create({
+      model,
+      temperature: 0.35,
+      max_tokens: 2048,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: SYSTEM_INSTRUCTION },
+        { role: "user", content: userPrompt },
+      ],
+    });
+
+    const rawText = completion.choices[0]?.message?.content?.trim() ?? "";
+    if (!rawText) {
+      return NextResponse.json(
+        { ok: false, error: "Model returned an empty response." },
+        { status: 502 },
+      );
+    }
+
     const parsed = parseModelJson(rawText);
     const normalized = normalizeTriagePayload(parsed);
     if (!normalized) {
@@ -138,7 +134,7 @@ Never include markdown, commentary, or text outside JSON.`,
   } catch (e) {
     const message = e instanceof Error ? e.message : "Unknown error";
     return NextResponse.json(
-      { ok: false, error: `Gemini request failed: ${message}` },
+      { ok: false, error: `OpenRouter request failed: ${message}` },
       { status: 502 },
     );
   }

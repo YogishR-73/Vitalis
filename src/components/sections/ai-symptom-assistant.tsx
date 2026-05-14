@@ -23,7 +23,7 @@ import { TriageInsightPanel } from "@/components/sections/triage-insight-panel";
 /**
  * --- Triage pipeline (client side) ---
  * 1) Capture user narrative in the glass copilot surface.
- * 2) POST to `/api/analyze-symptoms` (server-only Gemini access).
+ * 2) POST to `/api/analyze-symptoms` (server-only OpenRouter access).
  * 3) Render typed triage JSON with motion-native disclosure + fallback copy on failures.
  */
 
@@ -40,7 +40,7 @@ type AnalyzeErr = { ok: false; error: string };
 type AnalyzeResponse = AnalyzeOk | AnalyzeErr;
 
 const WELCOME_TEXT =
-  "You are connected to the VITALIS triage reasoning layer. Describe your chief complaint, timing, severity (0–10), associated symptoms, and modifiers. Each send routes your narrative through Gemini Flash for structured triage JSON—review every field with a licensed clinician before acting.";
+  "You are connected to the VITALIS triage reasoning layer. Describe your chief complaint, timing, severity (0–10), associated symptoms, and modifiers. Each send routes your narrative through OpenRouter (instruction-tuned free model) for structured triage JSON—review every field with a licensed clinician before acting.";
 
 const initialMessages: Msg[] = [
   {
@@ -185,7 +185,7 @@ export function AiSymptomAssistant() {
                 </motion.div>
                 <div>
                   <div className="text-sm font-medium text-white">VITALIS Copilot</div>
-                  <div className="text-xs text-cyan-200/60">Gemini Flash · Server-side NLP</div>
+                  <div className="text-xs text-cyan-200/60">OpenRouter · Server-side NLP</div>
                 </div>
               </div>
               <motion.div whileTap={{ scale: 0.96 }} transition={spring.tactile}>
@@ -262,7 +262,7 @@ export function AiSymptomAssistant() {
                         animate={{ opacity: [0.35, 1, 0.35] }}
                         transition={{ duration: 1.4, repeat: Infinity, ease: ease.inOut }}
                       />
-                      Running Gemini triage synthesis…
+                      Running OpenRouter triage synthesis…
                     </motion.div>
                   )}
                 </AnimatePresence>

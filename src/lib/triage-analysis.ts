@@ -1,5 +1,5 @@
 /**
- * Shared contract between the Gemini triage pipeline (`/api/analyze-symptoms`)
+ * Shared contract between the OpenRouter-backed triage pipeline (`/api/analyze-symptoms`)
  * and the cinematic assistant UI. Keeping this module isomorphic-friendly
  * (no Node-only imports) lets the client stay strictly typed without leaking secrets.
  */
